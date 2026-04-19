@@ -1,0 +1,27 @@
+{
+  "agent_name": "Jerico",
+  "version": "1.0.0",
+  "language": "Bengali, English",
+  "voice_model": "google-cloud",
+  "tts_engine": "pyttsx3",
+  "api_provider": "openai",
+  "openai_model": "gpt-4-turbo",
+  "speech_recognition_language": ["bn-BD", "en-US"],
+  "audio_settings": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "frame_duration_ms": 20
+  },
+  "wake_word": "jerico",
+  "timeout_seconds": 10,
+  "debug_mode": true,
+  "supported_actions": [
+    "open_application",
+    "write_file",
+    "execute_command",
+    "web_search",
+    "screenshot",
+    "open_browser",
+    "close_application"
+  ]
+}
