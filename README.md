@@ -6,7 +6,7 @@ A powerful voice-controlled AI assistant that understands both **Bengali** and *
 
 ✨ **Voice Commands** - Speak in Bengali or English  
 🎯 **Smart Command Execution** - Open apps, write code, create files  
-🧠 **AI-Powered** - Powered by OpenAI's GPT-4 Turbo  
+🧠 **AI-Powered** - Powered by Gemini (default) or OpenAI  
 🎤 **Voice I/O** - Listen and respond with realistic speech  
 ⚡ **Low Resource Usage** - Optimized for Python (lighter than Node.js)  
 🔧 **Keyboard Shortcuts** - Press 'J' to activate anytime  
@@ -48,7 +48,19 @@ pip install -r requirements.txt
 sudo apt-get install python3-dev libportaudio2 portaudio19-dev
 ```
 
-### Step 4: Configure OpenAI API Key
+### Step 4: Configure Gemini API Key (Recommended)
+
+1. Get your Gemini API key from Google AI Studio
+2. Copy `.env.example` to `.env`:
+  ```bash
+  cp .env.example .env
+  ```
+3. Edit `.env` and add your key:
+  ```
+  GEMINI_API_KEY=your-gemini-key-here
+  ```
+
+### Optional: Configure OpenAI API Key
 
 1. Get your OpenAI API key from [OpenAI Dashboard](https://platform.openai.com/api-keys)
 2. Copy `.env.example` to `.env`:
@@ -97,7 +109,9 @@ Edit `config.json` to customize:
 {
   "agent_name": "Jerico",
   "language": "Bengali, English",
-  "openai_model": "gpt-4-turbo",
+  "api_provider": "gemini",
+  "gemini_model": "gemini-1.5-flash",
+  "openai_model": "gpt-4o-mini",
   "wake_word": "jerico",
   "timeout_seconds": 10,
   "supported_actions": [
@@ -138,7 +152,10 @@ python -m speech_recognition
 ```
 
 ### Issue: OpenAI API errors
-**Solution:** Verify your API key is correct in `.env` file
+**Solution:** Verify `OPENAI_API_KEY` is correct in `.env` file
+
+### Issue: Gemini API errors
+**Solution:** Verify `GEMINI_API_KEY` is correct in `.env` and check Google AI Studio quota
 
 ### Issue: Slow response
 **Solution:** Ensure you have a good internet connection for API calls

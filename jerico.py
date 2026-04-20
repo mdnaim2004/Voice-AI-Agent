@@ -14,6 +14,10 @@ from pynput import keyboard
 from contextlib import contextmanager
 import ctypes
 import argparse
+import asyncio
+import tempfile
+import shutil
+import importlib
 
 # Load environment variables
 load_dotenv()
@@ -84,13 +88,24 @@ class JericoAgent:
         """Initialize Jerico Voice AI Agent"""
         self.config = self.load_config()
         self.api_provider = self.config.get('api_provider', 'gemini').lower()
+        self.tts_provider = self.config.get('tts_provider', 'edge').lower()
         self.recognizer = sr.Recognizer()
         with suppress_alsa_warnings():
             self.microphone = sr.Microphone()
         
         # Initialize text-to-speech engine
         self.tts_engine = pyttsx3.init()
-        self.tts_engine.setProperty('rate', 150)  # Speech rate
+        self.tts_engine.setProperty('rate', 165)  # Slightly natural conversational speed
+        self.tts_engine.setProperty('volume', 1.0)
+        self._configure_tts_voice()
+        self.edge_tts_module = self._load_edge_tts_module()
+        self.edge_voice_en = self.config.get('edge_tts_voice_en', 'en-US-EmmaMultilingualNeural')
+        self.edge_voice_bn = self.config.get('edge_tts_voice_bn', 'bn-BD-NabanitaNeural')
+        self.edge_player = self._detect_edge_audio_player()
+        if self.tts_provider == 'edge' and self.edge_tts_module is None:
+            print("⚠️ edge-tts is not available in current Python environment. Falling back to pyttsx3.")
+        if self.tts_provider == 'edge' and not self.edge_player:
+            print("⚠️ No audio player found (ffplay/mpg123/mpv/cvlc). Falling back to pyttsx3.")
         
         # Initialize AI backend
         self.openai_client = None
@@ -105,6 +120,7 @@ class JericoAgent:
         print(f"Version: {self.config['version']}")
         print(f"Agent Name: {self.config['agent_name']}")
         print(f"AI Provider: {self.api_provider}")
+        print(f"TTS Provider: {self.tts_provider}")
         print("Say 'Jerico' to wake me up, or press 'J' key to activate...")
 
     def _build_model_candidates(self):
@@ -282,10 +298,116 @@ class JericoAgent:
         config_path = Path(__file__).parent / "config.json"
         with open(config_path, 'r') as f:
             return json.load(f)
+
+    def _configure_tts_voice(self):
+        """Pick the most natural available voice from local TTS engine."""
+        try:
+            voices = self.tts_engine.getProperty('voices')
+            if not voices:
+                return
+
+            preferred_keywords = [
+                'english-us',
+                'en-us',
+                'zira',
+                'david',
+                'female',
+                'male',
+                'english',
+            ]
+
+            best_voice = None
+            best_score = -1
+
+            for voice in voices:
+                voice_blob = f"{voice.id} {voice.name}".lower()
+                score = 0
+                for index, key in enumerate(preferred_keywords):
+                    if key in voice_blob:
+                        score += len(preferred_keywords) - index
+                if score > best_score:
+                    best_score = score
+                    best_voice = voice
+
+            if best_voice is not None:
+                self.tts_engine.setProperty('voice', best_voice.id)
+        except Exception:
+            pass
+
+    def _detect_edge_audio_player(self):
+        """Find an installed command-line audio player for Edge TTS mp3 output."""
+        for player in ["ffplay", "mpg123", "mpv", "cvlc"]:
+            path = shutil.which(player)
+            if path:
+                return path
+        return None
+
+    def _load_edge_tts_module(self):
+        """Load edge_tts lazily to avoid hard import failures at startup."""
+        try:
+            return importlib.import_module('edge_tts')
+        except Exception:
+            return None
+
+    async def _edge_tts_generate_file(self, text, voice, output_path):
+        """Generate mp3 file from Edge TTS."""
+        communicator = self.edge_tts_module.Communicate(text=text, voice=voice)
+        await communicator.save(output_path)
+
+    def _edge_tts_play_file(self, audio_path):
+        """Play generated mp3 file with available system player."""
+        if not self.edge_player:
+            return False
+
+        player_name = os.path.basename(self.edge_player)
+        if player_name == "ffplay":
+            cmd = [self.edge_player, "-nodisp", "-autoexit", "-loglevel", "quiet", audio_path]
+        elif player_name == "mpg123":
+            cmd = [self.edge_player, "-q", audio_path]
+        elif player_name == "mpv":
+            cmd = [self.edge_player, "--no-video", "--really-quiet", audio_path]
+        else:  # cvlc
+            cmd = [self.edge_player, "--play-and-exit", "--quiet", audio_path]
+
+        try:
+            subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except Exception:
+            return False
+
+    def _speak_with_edge_tts(self, text):
+        """Speak text using Edge TTS neural voice. Returns True when spoken."""
+        if self.tts_provider != 'edge':
+            return False
+        if self.edge_tts_module is None:
+            return False
+        if not self.edge_player:
+            return False
+
+        language = self.detect_language(text)
+        voice = self.edge_voice_bn if language == 'bn' else self.edge_voice_en
+
+        tmp_file = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+                tmp_file = tmp.name
+
+            asyncio.run(self._edge_tts_generate_file(text, voice, tmp_file))
+            return self._edge_tts_play_file(tmp_file)
+        except Exception:
+            return False
+        finally:
+            if tmp_file and os.path.exists(tmp_file):
+                try:
+                    os.remove(tmp_file)
+                except Exception:
+                    pass
     
     def speak(self, text):
         """Convert text to speech"""
         print(f"🎤 Jerico: {text}")
+        if self._speak_with_edge_tts(text):
+            return
         self.tts_engine.say(text)
         self.tts_engine.runAndWait()
     
