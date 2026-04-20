@@ -76,7 +76,7 @@ class JericoAgent:
             response = "Sorry, I couldn't reach the speech recognition service."
             self.speak(response)
             return None
-        except sr.Timeout:
+        except sr.WaitTimeoutError:
             return None
     
     def detect_language(self, text):
