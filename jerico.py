@@ -12,6 +12,7 @@ import threading
 from pynput import keyboard
 from contextlib import contextmanager
 import ctypes
+import argparse
 
 # Load environment variables
 load_dotenv()
@@ -90,7 +91,12 @@ class JericoAgent:
         self.tts_engine.setProperty('rate', 150)  # Speech rate
         
         # Initialize OpenAI client
-        self.openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY not found. Add it to your .env file.")
+
+        self.openai_client = OpenAI(api_key=api_key)
+        self.model_candidates = self._build_model_candidates()
         
         self.is_listening = False
         self.current_language = "en"  # Default language
@@ -99,6 +105,51 @@ class JericoAgent:
         print(f"Version: {self.config['version']}")
         print(f"Agent Name: {self.config['agent_name']}")
         print("Say 'Jerico' to wake me up, or press 'J' key to activate...")
+
+    def _build_model_candidates(self):
+        """Build ordered model fallback list for broader account compatibility."""
+        configured = self.config.get('openai_model', 'gpt-4o-mini')
+        fallbacks = ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4o']
+        ordered = [configured] + [m for m in fallbacks if m != configured]
+        return ordered
+
+    def _is_model_not_available_error(self, error):
+        """Return True when OpenAI rejects a model name or access to that model."""
+        msg = str(error).lower()
+        markers = [
+            'model_not_found',
+            'does not exist',
+            'you do not have access',
+            'unsupported_model',
+        ]
+        return any(marker in msg for marker in markers)
+
+    def _create_completion_with_fallback(self, system_prompt, user_input):
+        """Try configured model first, then fall back to compatible alternatives."""
+        last_error = None
+
+        for model_name in self.model_candidates:
+            try:
+                response = self.openai_client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_input}
+                    ],
+                    temperature=0.7,
+                    max_tokens=500
+                )
+
+                if model_name != self.config.get('openai_model'):
+                    print(f"ℹ️ Falling back to available model: {model_name}")
+
+                return response
+            except Exception as err:
+                last_error = err
+                if not self._is_model_not_available_error(err):
+                    raise
+
+        raise last_error
     
     def load_config(self):
         """Load configuration from config.json"""
@@ -163,16 +214,8 @@ class JericoAgent:
             self.current_language = language
             
             system_prompt = self._get_system_prompt(language)
-            
-            response = self.openai_client.chat.completions.create(
-                model=self.config['openai_model'],
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_input}
-                ],
-                temperature=0.7,
-                max_tokens=500
-            )
+
+            response = self._create_completion_with_fallback(system_prompt, user_input)
             
             return response.choices[0].message.content
         
@@ -243,9 +286,9 @@ class JericoAgent:
         return self.config['wake_word'].lower() in text.lower()
     
     def run(self):
-        """Main loop for Jerico"""
+        """Run Jerico in voice mode"""
         print("\n🎯 Jerico is ready! Say 'Jerico' to activate, or press 'J' key...")
-        print("Type 'quit' to exit\n")
+        print("Say 'quit' or 'exit' to stop, or press Ctrl+C.\n")
         
         listener = keyboard.Listener(on_press=self.on_key_press)
         listener.start()
@@ -257,6 +300,10 @@ class JericoAgent:
                 
                 if not user_input:
                     continue
+
+                if user_input.strip().lower() in {"quit", "exit", "bye"}:
+                    self.speak("Goodbye!")
+                    break
                 
                 # Check for wake word
                 if not self.wake_word_detection(user_input):
@@ -270,6 +317,10 @@ class JericoAgent:
                 
                 if not command:
                     continue
+
+                if command.strip().lower() in {"quit", "exit", "bye"}:
+                    self.speak("Goodbye!")
+                    break
                 
                 # Try to execute action first
                 action_response = self.execute_action(command)
@@ -283,7 +334,35 @@ class JericoAgent:
         
         except KeyboardInterrupt:
             print("\n👋 Goodbye!")
+        finally:
             listener.stop()
+
+    def run_text_mode(self):
+        """Run Jerico in text mode (no microphone required)."""
+        print("\n📝 Text mode active. Type commands and press Enter.")
+        print("Type 'quit' or 'exit' to stop.\n")
+
+        while True:
+            try:
+                user_input = input("You: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n👋 Goodbye!")
+                break
+
+            if not user_input:
+                continue
+
+            if user_input.lower() in {"quit", "exit", "bye"}:
+                self.speak("Goodbye!")
+                break
+
+            action_response = self.execute_action(user_input)
+            if action_response:
+                self.speak(action_response)
+                continue
+
+            response = self.process_command(user_input)
+            self.speak(response)
     
     def on_key_press(self, key):
         """Handle keyboard shortcuts"""
@@ -298,5 +377,17 @@ class JericoAgent:
             pass
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Jerico Voice AI Agent")
+    parser.add_argument(
+        "--mode",
+        choices=["voice", "text"],
+        default="voice",
+        help="Run in voice mode or text mode (default: voice)",
+    )
+    args = parser.parse_args()
+
     agent = JericoAgent()
-    agent.run()
+    if args.mode == "text":
+        agent.run_text_mode()
+    else:
+        agent.run()
