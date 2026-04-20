@@ -10,16 +10,48 @@ from pathlib import Path
 from dotenv import load_dotenv
 import threading
 from pynput import keyboard
+from contextlib import contextmanager
+import ctypes
 
 # Load environment variables
 load_dotenv()
+
+
+def _alsa_error_handler(filename, line, function, err, fmt):
+    # Intentionally no-op to silence verbose native ALSA warnings.
+    return
+
+
+@contextmanager
+def suppress_alsa_warnings():
+    """Temporarily suppress low-level ALSA error spam on Linux."""
+    try:
+        asound = ctypes.cdll.LoadLibrary("libasound.so")
+        handler_type = ctypes.CFUNCTYPE(
+            None,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+        )
+        c_handler = handler_type(_alsa_error_handler)
+        asound.snd_lib_error_set_handler(c_handler)
+        try:
+            yield
+        finally:
+            asound.snd_lib_error_set_handler(None)
+    except Exception:
+        # If ALSA library hooks are unavailable, continue without suppression.
+        yield
 
 class JericoAgent:
     def __init__(self):
         """Initialize Jerico Voice AI Agent"""
         self.config = self.load_config()
         self.recognizer = sr.Recognizer()
-        self.microphone = sr.Microphone()
+        with suppress_alsa_warnings():
+            self.microphone = sr.Microphone()
         
         # Initialize text-to-speech engine
         self.tts_engine = pyttsx3.init()
@@ -52,7 +84,7 @@ class JericoAgent:
         """Listen to user voice input"""
         try:
             print(f"👂 Listening... ({language})")
-            with self.microphone as source:
+            with suppress_alsa_warnings(), self.microphone as source:
                 # Adjust for ambient noise
                 self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
                 
