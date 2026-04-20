@@ -124,6 +124,55 @@ class JericoAgent:
         ]
         return any(marker in msg for marker in markers)
 
+    def _categorize_openai_error(self, error):
+        """Classify common OpenAI failures for user-friendly fallback handling."""
+        msg = str(error).lower()
+        if 'insufficient_quota' in msg or 'exceeded your current quota' in msg:
+            return 'quota'
+        if 'rate_limit' in msg or 'too many requests' in msg:
+            return 'rate_limit'
+        if 'invalid_api_key' in msg or 'incorrect api key' in msg:
+            return 'auth'
+        if self._is_model_not_available_error(error):
+            return 'model'
+        return 'other'
+
+    def _offline_fallback_response(self, user_input, reason='other'):
+        """Provide a basic local fallback when cloud AI is unavailable."""
+        responses = {
+            'quota': (
+                "OpenAI quota is exhausted right now. I can still run local commands "
+                "like opening apps and websites."
+            ),
+            'rate_limit': (
+                "OpenAI rate limit is currently reached. Please try again in a moment. "
+                "Local commands still work."
+            ),
+            'auth': (
+                "OpenAI API key appears invalid or unauthorized. Please check OPENAI_API_KEY "
+                "in your .env file."
+            ),
+            'model': (
+                "The configured AI model is not available for this account. "
+                "I can continue with local commands."
+            ),
+            'other': (
+                "The AI service is temporarily unavailable. I can still help with local commands."
+            ),
+        }
+
+        normalized = user_input.strip().lower()
+        small_talk = {
+            'hello': "Hello! I am running in local fallback mode right now.",
+            'hi': "Hi! AI is unavailable at the moment, but I can still run local actions.",
+            'how are you': "I am operational. AI cloud access is currently limited.",
+        }
+
+        if normalized in small_talk:
+            return f"{small_talk[normalized]} {responses.get(reason, responses['other'])}"
+
+        return responses.get(reason, responses['other'])
+
     def _create_completion_with_fallback(self, system_prompt, user_input):
         """Try configured model first, then fall back to compatible alternatives."""
         last_error = None
@@ -220,9 +269,10 @@ class JericoAgent:
             return response.choices[0].message.content
         
         except Exception as e:
+            category = self._categorize_openai_error(e)
             error_msg = f"Error processing command: {str(e)}"
             print(f"❌ {error_msg}")
-            return "Sorry, I encountered an error processing your request."
+            return self._offline_fallback_response(user_input, reason=category)
     
     def _get_system_prompt(self, language="en"):
         """Get system prompt based on language"""
