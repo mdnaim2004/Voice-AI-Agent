@@ -18,6 +18,7 @@ import asyncio
 import tempfile
 import shutil
 import importlib
+from datetime import datetime
 
 # Load environment variables
 load_dotenv()
@@ -209,7 +210,7 @@ class JericoAgent:
         return 'other'
 
     def _offline_fallback_response(self, user_input, reason='other'):
-        """Provide a basic local fallback when cloud AI is unavailable."""
+        """Provide a practical local fallback when cloud AI is unavailable."""
         responses = {
             'quota': (
                 "AI quota is exhausted right now. I can still run local commands "
@@ -233,15 +234,29 @@ class JericoAgent:
 
         normalized = user_input.strip().lower()
         small_talk = {
-            'hello': "Hello! I am running in local fallback mode right now.",
+            'hello': "Hello! I am running in local mode right now.",
             'hi': "Hi! AI is unavailable at the moment, but I can still run local actions.",
-            'how are you': "I am operational. AI cloud access is currently limited.",
+            'how are you': "I am operational. Cloud AI access is currently limited.",
+            'what can you do': "I can open apps, open websites, and handle basic local commands.",
+            'help': "Try commands like: open chrome, open youtube, open vs code, or say quit.",
         }
 
         if normalized in small_talk:
-            return f"{small_talk[normalized]} {responses.get(reason, responses['other'])}"
+            return small_talk[normalized]
 
-        return responses.get(reason, responses['other'])
+        if 'time' in normalized:
+            return f"The current time is {datetime.now().strftime('%I:%M %p')}."
+
+        if 'date' in normalized or 'day' in normalized:
+            return f"Today is {datetime.now().strftime('%A, %B %d, %Y')}."
+
+        if normalized.startswith('open '):
+            return "I can try local app actions for that. Say open chrome, open firefox, open youtube, or open vs code."
+
+        if normalized.startswith('write '):
+            return "I can help outline code locally, but cloud AI is currently unavailable. Try a shorter prompt or open a specific app."
+
+        return f"{responses.get(reason, responses['other'])} You can also ask for time, date, help, or open apps."
 
     def _create_openai_completion_with_fallback(self, system_prompt, user_input):
         """Try configured OpenAI model first, then compatible alternatives."""
@@ -334,10 +349,13 @@ class JericoAgent:
                         self.api_provider = 'gemini'
                         self.openai_client = previous_client
                         self.model_candidates = previous_candidates
-                raise
+                return self._offline_fallback_response(user_input, reason=self._categorize_ai_error(error))
 
-        response = self._create_openai_completion_with_fallback(system_prompt, user_input)
-        return response.choices[0].message.content
+        try:
+            response = self._create_openai_completion_with_fallback(system_prompt, user_input)
+            return response.choices[0].message.content
+        except Exception as error:
+            return self._offline_fallback_response(user_input, reason=self._categorize_ai_error(error))
     
     def load_config(self):
         """Load configuration from config.json"""

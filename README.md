@@ -5,6 +5,7 @@ Jerico is a bilingual (Bangla + English) voice assistant with local action handl
 Current defaults:
 - AI provider: Gemini
 - TTS provider: Edge TTS (with automatic fallback to pyttsx3)
+- Local mode fallback: enabled when cloud quota/API is unavailable
 
 ## Features
 
@@ -124,6 +125,7 @@ Fix:
 2. If `api_provider` is `gemini`, add `GEMINI_API_KEY=...`.
 3. If you only have `OPENAI_API_KEY`, Jerico will fall back to OpenAI automatically.
 4. Restart app.
+5. If both cloud providers fail, Jerico still works in local mode for time/date/help/app actions.
 
 ### Problem: Voice sounds same/robotic
 Cause: Edge TTS is not active; app fell back to pyttsx3.
