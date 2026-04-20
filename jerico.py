@@ -90,8 +90,9 @@ class JericoAgent:
         self.api_provider = self.config.get('api_provider', 'gemini').lower()
         self.tts_provider = self.config.get('tts_provider', 'edge').lower()
         self.recognizer = sr.Recognizer()
-        with suppress_alsa_warnings():
-            self.microphone = sr.Microphone()
+        self.microphone = None
+        self.voice_input_available = False
+        self._init_microphone()
         
         # Initialize text-to-speech engine
         self.tts_engine = pyttsx3.init()
@@ -109,6 +110,7 @@ class JericoAgent:
         
         # Initialize AI backend
         self.openai_client = None
+        self.openai_fallback_client = None
         self.model_candidates = self._build_model_candidates()
         self.ai_available = False
         self._init_ai_backend()
@@ -121,7 +123,19 @@ class JericoAgent:
         print(f"Agent Name: {self.config['agent_name']}")
         print(f"AI Provider: {self.api_provider}")
         print(f"TTS Provider: {self.tts_provider}")
+        print(f"Voice Input: {'enabled' if self.voice_input_available else 'disabled'}")
         print("Say 'Jerico' to wake me up, or press 'J' key to activate...")
+
+    def _init_microphone(self):
+        """Initialize microphone safely so text mode can still run without audio devices."""
+        try:
+            with suppress_alsa_warnings():
+                self.microphone = sr.Microphone()
+            self.voice_input_available = True
+        except Exception as error:
+            self.microphone = None
+            self.voice_input_available = False
+            print(f"⚠️ Microphone unavailable ({error}). Voice mode will be limited.")
 
     def _build_model_candidates(self):
         """Build ordered model fallback list for current AI provider."""
@@ -138,10 +152,23 @@ class JericoAgent:
         """Initialize selected AI backend client."""
         if self.api_provider == 'gemini':
             api_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY')
+            fallback_openai_key = os.getenv('OPENAI_API_KEY')
+            if fallback_openai_key:
+                self.openai_fallback_client = OpenAI(api_key=fallback_openai_key)
+
             if not api_key:
+                if self.openai_fallback_client is not None:
+                    self.api_provider = 'openai'
+                    self.openai_client = self.openai_fallback_client
+                    self.model_candidates = self._build_model_candidates()
+                    self.ai_available = True
+                    print("⚠️ GEMINI_API_KEY not found. Falling back to OPENAI_API_KEY.")
+                    return
+
                 print("⚠️ GEMINI_API_KEY not found. Running in local fallback mode.")
                 return
             genai.configure(api_key=api_key)
+            self.model_candidates = self._build_model_candidates()
             self.ai_available = True
             return
 
@@ -151,6 +178,8 @@ class JericoAgent:
             return
 
         self.openai_client = OpenAI(api_key=api_key)
+        self.openai_fallback_client = self.openai_client
+        self.model_candidates = self._build_model_candidates()
         self.ai_available = True
 
     def _is_model_not_available_error(self, error):
@@ -288,7 +317,24 @@ class JericoAgent:
     def _generate_ai_response(self, system_prompt, user_input):
         """Generate AI response from selected provider with model fallback."""
         if self.api_provider == 'gemini':
-            return self._create_gemini_completion_with_fallback(system_prompt, user_input)
+            try:
+                return self._create_gemini_completion_with_fallback(system_prompt, user_input)
+            except Exception as error:
+                if self.openai_fallback_client is not None and self._categorize_ai_error(error) in {'quota', 'rate_limit', 'model', 'auth'}:
+                    print("ℹ️ Falling back to OpenAI after Gemini error.")
+                    previous_client = self.openai_client
+                    previous_candidates = self.model_candidates
+                    try:
+                        self.api_provider = 'openai'
+                        self.openai_client = self.openai_fallback_client
+                        self.model_candidates = self._build_model_candidates()
+                        response = self._create_openai_completion_with_fallback(system_prompt, user_input)
+                        return response.choices[0].message.content
+                    finally:
+                        self.api_provider = 'gemini'
+                        self.openai_client = previous_client
+                        self.model_candidates = previous_candidates
+                raise
 
         response = self._create_openai_completion_with_fallback(system_prompt, user_input)
         return response.choices[0].message.content
@@ -413,6 +459,9 @@ class JericoAgent:
     
     def listen(self, language="en-US"):
         """Listen to user voice input"""
+        if not self.voice_input_available or self.microphone is None:
+            return None
+
         try:
             print(f"👂 Listening... ({language})")
             with suppress_alsa_warnings(), self.microphone as source:
@@ -536,6 +585,11 @@ class JericoAgent:
     
     def run(self):
         """Run Jerico in voice mode"""
+        if not self.voice_input_available:
+            print("\n⚠️ Voice input is not available on this system. Switching to text mode.")
+            self.run_text_mode()
+            return
+
         print("\n🎯 Jerico is ready! Say 'Jerico' to activate, or press 'J' key...")
         print("Say 'quit' or 'exit' to stop, or press Ctrl+C.\n")
         
