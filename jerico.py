@@ -4,6 +4,7 @@ import sys
 import speech_recognition as sr
 import pyttsx3
 from openai import OpenAI
+import google.generativeai as genai
 import subprocess
 import webbrowser
 from pathlib import Path
@@ -82,6 +83,7 @@ class JericoAgent:
     def __init__(self):
         """Initialize Jerico Voice AI Agent"""
         self.config = self.load_config()
+        self.api_provider = self.config.get('api_provider', 'gemini').lower()
         self.recognizer = sr.Recognizer()
         with suppress_alsa_warnings():
             self.microphone = sr.Microphone()
@@ -90,13 +92,11 @@ class JericoAgent:
         self.tts_engine = pyttsx3.init()
         self.tts_engine.setProperty('rate', 150)  # Speech rate
         
-        # Initialize OpenAI client
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY not found. Add it to your .env file.")
-
-        self.openai_client = OpenAI(api_key=api_key)
+        # Initialize AI backend
+        self.openai_client = None
         self.model_candidates = self._build_model_candidates()
+        self.ai_available = False
+        self._init_ai_backend()
         
         self.is_listening = False
         self.current_language = "en"  # Default language
@@ -104,28 +104,54 @@ class JericoAgent:
         print("🤖 Jerico Voice AI Agent initialized!")
         print(f"Version: {self.config['version']}")
         print(f"Agent Name: {self.config['agent_name']}")
+        print(f"AI Provider: {self.api_provider}")
         print("Say 'Jerico' to wake me up, or press 'J' key to activate...")
 
     def _build_model_candidates(self):
-        """Build ordered model fallback list for broader account compatibility."""
-        configured = self.config.get('openai_model', 'gpt-4o-mini')
-        fallbacks = ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4o']
+        """Build ordered model fallback list for current AI provider."""
+        if self.api_provider == 'gemini':
+            configured = self.config.get('gemini_model', 'gemini-1.5-flash')
+            fallbacks = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash']
+        else:
+            configured = self.config.get('openai_model', 'gpt-4o-mini')
+            fallbacks = ['gpt-4o-mini', 'gpt-4.1-mini', 'gpt-4o']
         ordered = [configured] + [m for m in fallbacks if m != configured]
         return ordered
 
+    def _init_ai_backend(self):
+        """Initialize selected AI backend client."""
+        if self.api_provider == 'gemini':
+            api_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY')
+            if not api_key:
+                print("⚠️ GEMINI_API_KEY not found. Running in local fallback mode.")
+                return
+            genai.configure(api_key=api_key)
+            self.ai_available = True
+            return
+
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            print("⚠️ OPENAI_API_KEY not found. Running in local fallback mode.")
+            return
+
+        self.openai_client = OpenAI(api_key=api_key)
+        self.ai_available = True
+
     def _is_model_not_available_error(self, error):
-        """Return True when OpenAI rejects a model name or access to that model."""
+        """Return True when provider rejects model name or access."""
         msg = str(error).lower()
         markers = [
             'model_not_found',
             'does not exist',
             'you do not have access',
             'unsupported_model',
+            'not found for api version',
+            'permission denied for model',
         ]
         return any(marker in msg for marker in markers)
 
-    def _categorize_openai_error(self, error):
-        """Classify common OpenAI failures for user-friendly fallback handling."""
+    def _categorize_ai_error(self, error):
+        """Classify common AI provider failures for user-friendly fallback handling."""
         msg = str(error).lower()
         if 'insufficient_quota' in msg or 'exceeded your current quota' in msg:
             return 'quota'
@@ -141,16 +167,15 @@ class JericoAgent:
         """Provide a basic local fallback when cloud AI is unavailable."""
         responses = {
             'quota': (
-                "OpenAI quota is exhausted right now. I can still run local commands "
+                "AI quota is exhausted right now. I can still run local commands "
                 "like opening apps and websites."
             ),
             'rate_limit': (
-                "OpenAI rate limit is currently reached. Please try again in a moment. "
+                "AI rate limit is currently reached. Please try again in a moment. "
                 "Local commands still work."
             ),
             'auth': (
-                "OpenAI API key appears invalid or unauthorized. Please check OPENAI_API_KEY "
-                "in your .env file."
+                "API key appears invalid or missing. Please check your .env file."
             ),
             'model': (
                 "The configured AI model is not available for this account. "
@@ -173,8 +198,8 @@ class JericoAgent:
 
         return responses.get(reason, responses['other'])
 
-    def _create_completion_with_fallback(self, system_prompt, user_input):
-        """Try configured model first, then fall back to compatible alternatives."""
+    def _create_openai_completion_with_fallback(self, system_prompt, user_input):
+        """Try configured OpenAI model first, then compatible alternatives."""
         last_error = None
 
         for model_name in self.model_candidates:
@@ -189,7 +214,7 @@ class JericoAgent:
                     max_tokens=500
                 )
 
-                if model_name != self.config.get('openai_model'):
+                if model_name != self.config.get('openai_model', 'gpt-4o-mini'):
                     print(f"ℹ️ Falling back to available model: {model_name}")
 
                 return response
@@ -199,6 +224,58 @@ class JericoAgent:
                     raise
 
         raise last_error
+
+    def _extract_gemini_text(self, response):
+        """Safely extract text from Gemini response object."""
+        text = getattr(response, 'text', None)
+        if text:
+            return text.strip()
+
+        candidates = getattr(response, 'candidates', None) or []
+        for candidate in candidates:
+            content = getattr(candidate, 'content', None)
+            parts = getattr(content, 'parts', None) or []
+            assembled = []
+            for part in parts:
+                part_text = getattr(part, 'text', None)
+                if part_text:
+                    assembled.append(part_text)
+            if assembled:
+                return "\n".join(assembled).strip()
+
+        return None
+
+    def _create_gemini_completion_with_fallback(self, system_prompt, user_input):
+        """Try configured Gemini model first, then compatible alternatives."""
+        last_error = None
+
+        for model_name in self.model_candidates:
+            try:
+                model = genai.GenerativeModel(
+                    model_name=model_name,
+                    system_instruction=system_prompt,
+                )
+                response = model.generate_content(user_input)
+                response_text = self._extract_gemini_text(response)
+                if response_text:
+                    if model_name != self.config.get('gemini_model', 'gemini-1.5-flash'):
+                        print(f"ℹ️ Falling back to available model: {model_name}")
+                    return response_text
+                raise RuntimeError("Empty response returned by Gemini model")
+            except Exception as err:
+                last_error = err
+                if not self._is_model_not_available_error(err):
+                    raise
+
+        raise last_error
+
+    def _generate_ai_response(self, system_prompt, user_input):
+        """Generate AI response from selected provider with model fallback."""
+        if self.api_provider == 'gemini':
+            return self._create_gemini_completion_with_fallback(system_prompt, user_input)
+
+        response = self._create_openai_completion_with_fallback(system_prompt, user_input)
+        return response.choices[0].message.content
     
     def load_config(self):
         """Load configuration from config.json"""
@@ -256,20 +333,20 @@ class JericoAgent:
         return "en"
     
     def process_command(self, user_input):
-        """Process user command using OpenAI"""
+        """Process user command using selected AI provider."""
         try:
             # Detect language
             language = self.detect_language(user_input)
             self.current_language = language
+
+            if not self.ai_available:
+                return self._offline_fallback_response(user_input, reason='auth')
             
             system_prompt = self._get_system_prompt(language)
-
-            response = self._create_completion_with_fallback(system_prompt, user_input)
-            
-            return response.choices[0].message.content
+            return self._generate_ai_response(system_prompt, user_input)
         
         except Exception as e:
-            category = self._categorize_openai_error(e)
+            category = self._categorize_ai_error(e)
             error_msg = f"Error processing command: {str(e)}"
             print(f"❌ {error_msg}")
             return self._offline_fallback_response(user_input, reason=category)

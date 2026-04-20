@@ -4,8 +4,9 @@
   "language": "Bengali, English",
   "voice_model": "google-cloud",
   "tts_engine": "pyttsx3",
-  "api_provider": "openai",
+  "api_provider": "gemini",
   "openai_model": "gpt-4o-mini",
+  "gemini_model": "gemini-1.5-flash",
   "speech_recognition_language": ["bn-BD", "en-US"],
   "audio_settings": {
     "sample_rate": 16000,
