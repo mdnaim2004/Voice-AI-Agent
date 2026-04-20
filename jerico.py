@@ -25,6 +25,10 @@ def _alsa_error_handler(filename, line, function, err, fmt):
 @contextmanager
 def suppress_alsa_warnings():
     """Temporarily suppress low-level ALSA error spam on Linux."""
+    asound = None
+    c_handler = None
+    stderr_fd = None
+    devnull_fd = None
     try:
         asound = ctypes.cdll.LoadLibrary("libasound.so")
         handler_type = ctypes.CFUNCTYPE(
@@ -37,13 +41,41 @@ def suppress_alsa_warnings():
         )
         c_handler = handler_type(_alsa_error_handler)
         asound.snd_lib_error_set_handler(c_handler)
-        try:
-            yield
-        finally:
-            asound.snd_lib_error_set_handler(None)
     except Exception:
-        # If ALSA library hooks are unavailable, continue without suppression.
+        # If ALSA hooks are unavailable, continue without suppression.
+        pass
+
+    try:
+        # Mute native JACK/ALSA C-library stderr noise for this critical section.
+        try:
+            stderr_fd = os.dup(2)
+            devnull_fd = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull_fd, 2)
+        except Exception:
+            stderr_fd = None
+            devnull_fd = None
         yield
+    finally:
+        if stderr_fd is not None:
+            try:
+                os.dup2(stderr_fd, 2)
+            except Exception:
+                pass
+        if devnull_fd is not None:
+            try:
+                os.close(devnull_fd)
+            except Exception:
+                pass
+        if stderr_fd is not None:
+            try:
+                os.close(stderr_fd)
+            except Exception:
+                pass
+        if asound is not None:
+            try:
+                asound.snd_lib_error_set_handler(None)
+            except Exception:
+                pass
 
 class JericoAgent:
     def __init__(self):
